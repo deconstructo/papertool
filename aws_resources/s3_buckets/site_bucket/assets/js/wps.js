@@ -1,4 +1,108 @@
-$(document).ready(function () {
+// ─── OIDC / Auth helpers ─────────────────────────────────────────────────────
+
+const userPoolId       = config.userPoolId;
+const userPoolClientId = config.userPoolClientId;
+const cognitoDomain    = config.cognitoDomain;
+// Strip trailing slash and index.html so the redirect URI is stable
+const redirectUri = (window.location.origin + window.location.pathname)
+  .replace(/\/index\.html$/, '/').replace(/([^/])$/, '$1');
+
+function b64url(array) {
+  return btoa(String.fromCharCode.apply(null, Array.from(array)))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
+
+async function pkceChallenge() {
+  const verifierBytes = crypto.getRandomValues(new Uint8Array(32));
+  const verifier      = b64url(verifierBytes);
+  const digest        = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+  return { verifier, challenge: b64url(new Uint8Array(digest)) };
+}
+
+function storedTokens() {
+  return {
+    idToken:     sessionStorage.getItem('pt_id_token'),
+    accessToken: sessionStorage.getItem('pt_access_token'),
+  };
+}
+
+function isAuthenticated() {
+  return !!storedTokens().idToken;
+}
+
+async function initiateLogin() {
+  const { verifier, challenge } = await pkceChallenge();
+  sessionStorage.setItem('pt_pkce_verifier', verifier);
+  const params = new URLSearchParams({
+    response_type:         'code',
+    client_id:             userPoolClientId,
+    redirect_uri:          redirectUri,
+    scope:                 'openid email profile',
+    code_challenge:        challenge,
+    code_challenge_method: 'S256',
+  });
+  window.location.href = `https://${cognitoDomain}/login?${params}`;
+}
+
+function logout() {
+  sessionStorage.removeItem('pt_id_token');
+  sessionStorage.removeItem('pt_access_token');
+  sessionStorage.removeItem('pt_pkce_verifier');
+  const params = new URLSearchParams({ client_id: userPoolClientId, logout_uri: redirectUri });
+  window.location.href = `https://${cognitoDomain}/logout?${params}`;
+}
+
+async function handleCallback() {
+  const url  = new URL(window.location.href);
+  const code = url.searchParams.get('code');
+  if (!code) return;
+
+  const verifier = sessionStorage.getItem('pt_pkce_verifier');
+  const body = new URLSearchParams({
+    grant_type:    'authorization_code',
+    client_id:     userPoolClientId,
+    code,
+    redirect_uri:  redirectUri,
+    code_verifier: verifier,
+  });
+
+  const res  = await fetch(`https://${cognitoDomain}/oauth2/token`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body,
+  });
+  const data = await res.json();
+  if (data.id_token) {
+    sessionStorage.setItem('pt_id_token',     data.id_token);
+    sessionStorage.setItem('pt_access_token', data.access_token);
+  }
+  url.searchParams.delete('code');
+  url.searchParams.delete('state');
+  history.replaceState({}, '', url.toString());
+}
+
+function parseJwtPayload(token) {
+  const b64 = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+  const pad  = (4 - b64.length % 4) % 4;
+  return JSON.parse(atob(b64 + '='.repeat(pad)));
+}
+
+function configureAuthenticatedAWS(region, identityPoolId) {
+  const { idToken } = storedTokens();
+  AWS.config.update({
+    region,
+    credentials: new AWS.CognitoIdentityCredentials({
+      IdentityPoolId: identityPoolId,
+      Logins: {
+        [`cognito-idp.${region}.amazonaws.com/${userPoolId}`]: idToken,
+      },
+    }),
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+$(document).ready(async function () {
   // please provide the appropriate values to the following variables
   // load variables
   const date = new Date();
@@ -23,13 +127,28 @@ $(document).ready(function () {
     $('button').prop('disabled', false);
     $('#errorModal').modal('show');
   }
-  // aws cognito
-  AWS.config.update({
-    region: awsRegion,
-    credentials: new AWS.CognitoIdentityCredentials({
-      IdentityPoolId: IdentityPoolId
-    })
-  });
+
+  // Handle OIDC callback, then enforce authentication
+  await handleCallback();
+
+  if (!isAuthenticated()) {
+    $('#auth-required').show();
+    $('#main-content').hide();
+    $('#loginBtn').on('click', () => initiateLogin());
+    return;
+  }
+
+  // Configure AWS SDK with authenticated Cognito credentials
+  configureAuthenticatedAWS(awsRegion, IdentityPoolId);
+
+  // Show auth bar with user info
+  try {
+    const payload = parseJwtPayload(storedTokens().idToken);
+    $('#user-email').text(payload.email || payload['cognito:username'] || 'Signed in');
+  } catch (_) { $('#user-email').text('Signed in'); }
+  $('#auth-bar').show();
+  $('#logoutBtn').on('click', logout);
+
   let s3 = new AWS.S3({
     // apiVersion: "2012-10-17",
     params: { Bucket: workingPaperBucket }
@@ -344,6 +463,7 @@ $(document).ready(function () {
             dataType: 'json',
             accept: 'application/json',
             processData: true,
+            headers: { 'Authorization': storedTokens().idToken },
             data: data,
             success: function (response) {
               console.log("API response:", response)
@@ -427,6 +547,7 @@ $(document).ready(function () {
             dataType: 'json',
             accept: 'application/json',
             processData: true,
+            headers: { 'Authorization': storedTokens().idToken },
             data: data,
             success: function (response) {
               console.log("API response:", response)

@@ -1,30 +1,60 @@
 AWSTemplateFormatVersion: 2010-09-09
-Description: Creates Lambda function, RestAPI (using APIGateway) and Cognito ID for PaperTool
+Description: Creates Lambda function, RestAPI (using APIGateway) and Cognito for PaperTool
 Metadata:
     Generator: "SoDa Labs"
     Author: "satyaborg"
+
+Parameters:
+  OIDCProviderUrl:
+    Description: "OIDC provider issuer URL (e.g. https://accounts.google.com for Google)"
+    Type: String
+  OIDCClientId:
+    Description: "Client ID from your OIDC provider"
+    Type: String
+  OIDCClientSecret:
+    Description: "Client secret from your OIDC provider"
+    Type: String
+    NoEcho: true
+  OIDCScopes:
+    Description: "Space-separated OAuth scopes to request from the OIDC provider"
+    Type: String
+    Default: "email profile openid"
+  CognitoDomainPrefix:
+    Description: "Unique lowercase prefix for the Cognito hosted UI domain (letters, numbers, hyphens only)"
+    Type: String
+    AllowedPattern: "[a-z0-9-]+"
+  SiteWebsiteUrl:
+    Description: "Website URL of the site bucket (WebsiteURL output from S3 stack)"
+    Type: String
 
 Outputs:
   ApiEndpoint:
     Description: URL for invocation of the REST API.
     Value: !Sub "https://${ApiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com/v1/upload"
-  IdentityPoolId: 
+  IdentityPoolId:
     Description: AWS Cognito identity pool ID.
     Value: !Ref CognitoIdentityPool
+  UserPoolId:
+    Description: Cognito User Pool ID.
+    Value: !Ref CognitoUserPool
+  UserPoolClientId:
+    Description: Cognito User Pool Client ID.
+    Value: !Ref CognitoUserPoolClient
+  CognitoDomain:
+    Description: Cognito hosted UI domain (use as cognitoDomain in settings.js).
+    Value: !Sub "${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com"
 
 Resources:
   LambdaLayer:
     Type: "AWS::Lambda::LayerVersion"
     Properties:
       CompatibleRuntimes:
-      - python3.9       # updated from 3.7 to 3.9 :: aws no longer supports below 3.9
+      - python3.9
       Content:
         S3Bucket: !ImportValue CodeBucket
         S3Key: layer.zip
       LayerName: wkhtmltopdf
 
-  # AWS Lambda definations: CloudFormation creates a lambda function named <CloudFormationStackName-ResourceName-RandomChars>
-  # Example: CreateLambdaFunction-UploadPaper-N7S3FMXJ8Z8R
   UploadLambdaFunction:
     Type: AWS::Lambda::Function
     Properties:
@@ -38,11 +68,8 @@ Resources:
       Role: !GetAtt LambdaExecutionRole.Arn
       MemorySize: 256
       Timeout: 300
-      Runtime: python3.9     # updated from 3.7 to 3.9 :: aws no longer supports below 3.9
+      Runtime: python3.9
 
-  # Creates an execution role called <CloudFormationStackName-ResourceName-RandomChars>
-  # Example: CreateLambdaFunction-LambdaExecutionRole-1TWFONVJX3VZQ
-  # The execution role is assigned to the lambda function
   LambdaExecutionRole:
     Type: AWS::IAM::Role
     Properties:
@@ -56,8 +83,6 @@ Resources:
           Action:
           - "sts:AssumeRole"
       Path: "/"
-      # Create a policy attached to the role
-      # Allow Cloudwatch logging
       Policies:
       - PolicyName: "AllowLogging"
         PolicyDocument:
@@ -67,8 +92,33 @@ Resources:
             Action:
             - logs:*
             Resource: arn:aws:logs:*:*:*
+      - PolicyName: "AllowS3Access"
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+          - Effect: "Allow"
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:DeleteObject
+            Resource:
+              - !Sub
+                - "arn:aws:s3:::${WPB}/*"
+                - WPB: !ImportValue WorkingPapersBucket
+              - !Sub
+                - "arn:aws:s3:::${SB}/*"
+                - SB: !ImportValue SiteBucket
+          - Effect: "Allow"
+            Action:
+              - s3:ListBucket
+            Resource:
+              - !Sub
+                - "arn:aws:s3:::${WPB}"
+                - WPB: !ImportValue WorkingPapersBucket
+              - !Sub
+                - "arn:aws:s3:::${SB}"
+                - SB: !ImportValue SiteBucket
 
-  # Permission for API Gateway endpoint to call TestLambdaFunction
   LambdaInvokePermission:
     Type: AWS::Lambda::Permission
     Properties:
@@ -78,28 +128,11 @@ Resources:
         - Arn
       Principal: apigateway.amazonaws.com
 
-  # APIGateway definations
-  # Defines the creation of /upload endpoint for handling the upload of working
-  # paper from the front-end and trigerring the Lambda function 
   ApiGatewayRestApi:
     Type: "AWS::ApiGateway::RestApi"
     Properties:
       Name: "uploadAPI"
       Description: "API for the working paper series"
-      # ApiKeySourceType: "HEADER"
-      # EndpointConfiguration: 
-      #   Types: 
-      #   - "REGIONAL"
-
-  # ApiGatewayStage:
-  #   Type: "AWS::ApiGateway::Stage"
-  #   Properties:
-  #     StageName: "v1"
-  #     DeploymentId: !Ref ApiGatewayDeployment
-  #     RestApiId: !Ref ApiGatewayRestApi
-  #     Description: "upload"
-  #     CacheClusterEnabled: false
-  #     TracingEnabled: false
 
   ApiGatewayResource:
     Type: "AWS::ApiGateway::Resource"
@@ -108,34 +141,43 @@ Resources:
       PathPart: "upload"
       ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
 
+  CognitoAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      Name: CognitoAuthorizer
+      Type: COGNITO_USER_POOLS
+      IdentitySource: method.request.header.Authorization
+      ProviderARNs:
+        - !GetAtt CognitoUserPool.Arn
+
   ApiGatewayMethod:
     Type: "AWS::ApiGateway::Method"
     Properties:
       RestApiId: !Ref ApiGatewayRestApi
       ResourceId: !Ref ApiGatewayResource
       HttpMethod: "POST"
-      AuthorizationType: "NONE"
+      AuthorizationType: "COGNITO_USER_POOLS"
+      AuthorizerId: !Ref CognitoAuthorizer
       ApiKeyRequired: false
       RequestParameters: {}
       MethodResponses:
-      - 
-        # ResponseModels: 
-        #   "application/json": !Ref ApiGatewayModel
-        ResponseParameters: 
+      -
+        ResponseParameters:
           "method.response.header.Access-Control-Allow-Origin": false
         StatusCode: "200"
-      Integration: 
+      Integration:
         CacheNamespace: !Ref ApiGatewayResource
         ContentHandling: "CONVERT_TO_TEXT"
         IntegrationHttpMethod: "POST"
-        IntegrationResponses: 
-        - 
-          ResponseParameters: 
+        IntegrationResponses:
+        -
+          ResponseParameters:
             "method.response.header.Access-Control-Allow-Origin": "'*'"
           ResponseTemplates: {}
           StatusCode: "200"
         PassthroughBehavior: "WHEN_NO_TEMPLATES"
-        RequestTemplates: 
+        RequestTemplates:
           "application/json": |
               {
                   "content": {
@@ -205,35 +247,118 @@ Resources:
       - ApiGatewayMethod
       - OptionsMethod
 
-  # AWS Cognito
+  # Cognito User Pool for OIDC-based authentication
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub "${AWS::StackName}-user-pool"
+      AutoVerifiedAttributes:
+        - email
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Required: true
+          Mutable: true
+
+  CognitoUserPoolIdentityProvider:
+    Type: AWS::Cognito::UserPoolIdentityProvider
+    Properties:
+      UserPoolId: !Ref CognitoUserPool
+      ProviderName: OIDCProvider
+      ProviderType: OIDC
+      ProviderDetails:
+        oidc_issuer: !Ref OIDCProviderUrl
+        client_id: !Ref OIDCClientId
+        client_secret: !Ref OIDCClientSecret
+        attributes_request_method: GET
+        authorize_scopes: !Ref OIDCScopes
+      AttributeMapping:
+        email: email
+
+  CognitoUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Ref CognitoDomainPrefix
+      UserPoolId: !Ref CognitoUserPool
+
+  CognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref CognitoUserPool
+      ClientName: papertool-client
+      GenerateSecret: false
+      SupportedIdentityProviders:
+        - OIDCProvider
+        - COGNITO
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthScopes:
+        - openid
+        - email
+        - profile
+      AllowedOAuthFlowsUserPoolClient: true
+      CallbackURLs:
+        - !Ref SiteWebsiteUrl
+      LogoutURLs:
+        - !Ref SiteWebsiteUrl
+    DependsOn: CognitoUserPoolIdentityProvider
+
   CognitoIdentityPool:
     Type: "AWS::Cognito::IdentityPool"
     Properties:
       IdentityPoolName: !ImportValue CodeBucket
-      AllowUnauthenticatedIdentities: true
-  
-   # Create a role for unauthorized acces to AWS resources w/ very limited access.
-  CognitoUnAuthorizedRole:
+      AllowUnauthenticatedIdentities: false
+      CognitoIdentityProviders:
+        - ClientId: !Ref CognitoUserPoolClient
+          ProviderName: !GetAtt CognitoUserPool.ProviderName
+    DependsOn: CognitoUserPoolClient
+
+  # Role for authenticated users: may upload to temp/ and read from both buckets
+  CognitoAuthorizedRole:
     Type: "AWS::IAM::Role"
     Properties:
-      AssumeRolePolicyDocument: 
+      AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
           - Effect: "Allow"
-            Principal: 
+            Principal:
               Federated: "cognito-identity.amazonaws.com"
-            Action: 
+            Action:
               - "sts:AssumeRoleWithWebIdentity"
             Condition:
-              StringEquals: 
+              StringEquals:
                 "cognito-identity.amazonaws.com:aud": !Ref CognitoIdentityPool
               "ForAnyValue:StringLike":
-                "cognito-identity.amazonaws.com:amr": unauthenticated
+                "cognito-identity.amazonaws.com:amr": authenticated
       Policies:
-        - PolicyName: "CognitoUnauthorizedPolicy"
-          PolicyDocument: 
+        - PolicyName: "CognitoAuthorizedPolicy"
+          PolicyDocument:
             Version: "2012-10-17"
-            Statement: 
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - s3:PutObject
+                Resource:
+                  - !Sub
+                    - "arn:aws:s3:::${WPB}/temp/*"
+                    - WPB: !ImportValue WorkingPapersBucket
+              - Effect: "Allow"
+                Action:
+                  - s3:GetObject
+                Resource:
+                  - !Sub
+                    - "arn:aws:s3:::${WPB}/*"
+                    - WPB: !ImportValue WorkingPapersBucket
+                  - !Sub
+                    - "arn:aws:s3:::${SB}/*"
+                    - SB: !ImportValue SiteBucket
+              - Effect: "Allow"
+                Action:
+                  - s3:ListBucket
+                Resource:
+                  - !Sub
+                    - "arn:aws:s3:::${WPB}"
+                    - WPB: !ImportValue WorkingPapersBucket
               - Effect: "Allow"
                 Action:
                   - "mobileanalytics:PutEvents"
@@ -244,5 +369,5 @@ Resources:
     Type: "AWS::Cognito::IdentityPoolRoleAttachment"
     Properties:
       IdentityPoolId: !Ref CognitoIdentityPool
-      Roles: 
-        unauthenticated: !GetAtt CognitoUnAuthorizedRole.Arn
+      Roles:
+        authenticated: !GetAtt CognitoAuthorizedRole.Arn

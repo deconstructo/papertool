@@ -141,7 +141,21 @@
         <hr>
         </hr>
 
+        <!-- Auth status bar — shown after login -->
+        <div id="auth-bar" class="d-flex justify-content-end align-items-center mb-3" style="display:none !important;">
+          <span class="mr-3 text-muted small" id="user-email"></span>
+          <button id="logoutBtn" class="btn btn-sm btn-outline-secondary ml-2">Sign out</button>
+        </div>
+
         <div id="msg"></div>
+
+        <!-- Shown when the user is not signed in -->
+        <div id="auth-required" class="text-center py-4" style="display:none;">
+          <p class="text-muted">You must sign in to use PaperTool.</p>
+          <button id="loginBtn" class="btn btn-primary">Sign in</button>
+        </div>
+
+        <div id="main-content">
         <p>📝 Please fill the form below and submit your working paper for it to be automatically processed and added to
           <a href="http://repec.org/">RePEc</a>.
           Alternatively, you can also update a previously submitted working paper. Note that all fields are mandatory.
@@ -276,6 +290,7 @@
             </form>
           </div>
         </div>
+        </div><!-- /#main-content -->
       </div>
       <div class="card-footer text-muted text-center">
         <img src="assets/img/soda-logo.jpeg" alt="logo" width="60" height="60" style="border-radius: 50%;" /> Powered by

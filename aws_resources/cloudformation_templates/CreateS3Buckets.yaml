@@ -30,10 +30,14 @@ Outputs:
   SiteBucket:
     Description: Name of the S3 site bucket.
     Value: !Ref SiteBucket
+    Export:
+      Name: SiteBucket
 
   WorkingPapersBucket:
     Description: Name of the S3 working papers archive.
     Value: !Ref WorkingPapersBucket
+    Export:
+      Name: WorkingPapersBucket
   
   CodeBucket:
     Description: Name of the Lambda function code respository.
@@ -146,14 +150,13 @@ Resources:
           -
             Action:
               - s3:GetObject
-              - s3:PutObject
             Effect: Allow
             Resource:
               - !Sub arn:aws:s3:::${SiteBucket}/*
             Principal:
               AWS:
                 - '*'
-  
+
   WorkingPapersBucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
@@ -163,19 +166,9 @@ Resources:
           -
             Action:
               - s3:GetObject
-              - s3:PutObject
             Effect: Allow
             Resource:
               - !Sub arn:aws:s3:::${WorkingPapersBucket}/*
-            Principal:
-              AWS:
-                - '*'
-          -
-            Action:
-              - s3:ListBucket
-            Effect: Allow
-            Resource:
-              - !Sub arn:aws:s3:::${WorkingPapersBucket}
             Principal:
               AWS:
                 - '*'

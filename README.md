@@ -13,6 +13,10 @@ PaperTool is a customizable tool from [Monash SoDa Labs](https://www.monash.edu/
 
 It's a fully cloud-based solution to one of the most common problems plaguing academics: Dissemination of working papers with minimal hassle and cost. Setup your working papers site within minutes!
 
+### Security
+
+PaperTool uses **OIDC authentication** (via AWS Cognito) to ensure only authorised users can submit papers. S3 buckets are public read-only — write access requires a valid sign-in. Works with Google Workspace, Microsoft Entra ID, Okta, and any standards-compliant OIDC provider. See [Authentication](https://sodalabsio.github.io/papertool/authentication/) for setup instructions.
+
 **See an example**: Check out the [Monash SoDa Labs working paper series](https://ideas.repec.org/s/ajr/sodwps.html) at RePeC, and be sure to inspect a PDF of any working paper.
 
 > We offer PaperTool both as a DIY open source tool for anyone to setup a working paper series on their own and also as a paid service from SoDa Labs. Please feel free to reach us at *SoDaLabs@monash.edu* should you require this service.

@@ -40,9 +40,14 @@ Before starting with PaperTool, you will need valid three-letter RePEc Archive c
 You should also have created a **cover.png** file to serve as your working paper series cover page template. PaperTool will automatically add the working paper meta-data to this template, using the middle portion of the page. It is essential that the template is of the same dimensions as the one provided in the `s3_buckets/working_papers_bucket/template/cover.png` file (i.e. 2487 x 3516 px). Review the existing `cover.png` file to understand the layout. The section in the middle is where the working paper meta-data will be added. When you are happy with your cover page template, replace the existing `aws_resources/s3_buckets/working_papers_bucket/cover.png` file with your own.
 
 ## A note on security
-By default PaperTool runs from **public buckets** on your S3. RePEc requires your archive bucket to have public read access (`s3:GetObject`) since this bucket is allowing RePEc to index your papers, and to point the world to your working paper files for download. However, in the initial installation, the archive bucket also allows write access publicly (`s3:PutObject`), since we need to allow the PaperTool functions to write new index files and pdfs to this folder. However, this also allows **anyone on the internet** to write to this bucket. By default, permissions for the site bucket are the same, read/write access is **public**.  As such, we **strongly recommend** you edit the bucket policy for each bucket to reduce this risk surface.
 
-Now, there are a variety of ways that you may want to limit access on your PaperTool buckets, and so we leave this to your own AWS security policies and risk appetite. One example approach is to allow public read access for both buckets (since RePEc needs it for the archive, and your users will need to access the upload site), but restrict write access to the archive only to an AWS role associated with the Lambda function. You can also ensure that not just anyone can use the PaperTool upload site by adding IP address restrictions to the API Gateway. In this scenario your users will need to be on a specific network to successfully use PaperTool, but this could include a university VPN so that they can still upload from home. For more information please refer to the [AWS documentation](https://docs.aws.amazon.com/AmazonS3/latest/userguide/example-bucket-policies.html).
+PaperTool is designed to be secure by default:
+
+- **Public read, no public write.** Both S3 buckets grant `s3:GetObject` to everyone (required for RepEC indexing and for visitors to download papers), but `s3:PutObject` is **not** granted publicly. Write access to final paper paths is restricted to the Lambda IAM execution role.
+- **Authenticated uploads.** The browser-side PDF upload (to the `temp/` prefix) requires a signed-in user via OIDC. Unauthenticated visitors can browse but cannot submit papers.
+- **Authorised API.** The API Gateway `/upload` endpoint requires a valid Cognito ID token in the `Authorization` header. Requests without a valid token receive a 401.
+
+For more detail on how authentication works and how to configure your OIDC provider, see the [Authentication](../authentication/) page.
 
 
 ## Folder structure
@@ -90,23 +95,40 @@ Once you have papertool on your machine, you will see the following main folders
     - `layer.zip`
     - `uploadWorkingPaper.zip`
 
-5. Now once again under [CloudFormation](https://console.aws.amazon.com/cloudformation), create a new stack by repeating all the process from above and uploading `CreateLambdaAPI.yaml` as the template this time.
-  - Name the stack as you like, you might like to repeat the name from the previous stack, adding `-lambda` to the end
-  - Note: on **Step 3: Configure stack options**, at the very bottom, make sure to click on "I acknowledge that AWS CloudFormation might create IAM resources" before hitting  `Create Stack`
-  - Once again, wait until the `Status` shows `CREATE_COMPLETE` on your Stacks list
+5. Before deploying the Lambda stack, **complete the OIDC provider setup** described on the [Authentication](../authentication/) page. You will need a Client ID and Client secret from your OIDC provider (Google, Microsoft Entra, Okta, etc.) and a unique Cognito domain prefix. See [Authentication → Registering PaperTool with your OIDC provider](../authentication/#registering-papertool-with-your-oidc-provider) for provider-specific instructions.
 
-6. Editing site bucket:
-  - Once again in CloudFormation, select the Lambda stack you just created (step 5), and navigate to the `Outputs` tab on the right hand side of the page. You may need to expand the size of your window to see this tab.
+6. Now once again under [CloudFormation](https://console.aws.amazon.com/cloudformation), create a new stack by repeating all the process from above and uploading `CreateLambdaAPI.yaml` as the template this time.
+  - Name the stack as you like (e.g. add `-lambda` to your previous stack name)
+  - You will be prompted for several parameters — in addition to the fields shown previously you will need to supply the OIDC credentials from the previous step:
+
+    | Parameter | Description |
+    |-----------|-------------|
+    | `OIDCProviderUrl` | OIDC issuer URL (e.g. `https://accounts.google.com`) |
+    | `OIDCClientId` | Client ID from your OIDC provider |
+    | `OIDCClientSecret` | Client secret from your OIDC provider |
+    | `OIDCScopes` | OAuth scopes — default `email profile openid` is correct for most providers |
+    | `CognitoDomainPrefix` | A globally unique lowercase prefix for your Cognito login page |
+    | `SiteWebsiteUrl` | The `WebsiteURL` output from the S3 stack you created earlier |
+
+  - On **Step 3: Configure stack options**, tick "I acknowledge that AWS CloudFormation might create IAM resources" before clicking `Create Stack`
+  - Wait until `Status` shows `CREATE_COMPLETE`
+
+7. Editing site bucket:
+  - In CloudFormation, select the Lambda stack you just created (step 6), and navigate to the `Outputs` tab. You may need to expand the size of your window to see this tab.
   <img src="https://raw.githubusercontent.com/sodalabsio/papertool/main/assets/images/cloudformation_outputs.png">
     <!-- <img src="/assets/images/cloudformation_outputs.png"> -->
-  - You will see a table with 2 rows, each with a `Key` and `Value`. Keep this window handy.
-  - Now, in a text editor, open the file `s3_buckets/site_bucket/assets/js/settings.js` and enter in the information for your archive, and bucket names as indicated in the file.
-    - Be sure to replace `mydept-aaa-archive` in the `templateUrl` config with your `workingPapersBucket` name (entered above).
-    - For `apiEndpoint` and `identityPoolId`, copy the `Value` from the `Outputs` tab in CloudFormation and paste it into the respective fields in `settings.js`.
-    - Save the file
-  - Now, over in S3, upload the contents of your local `s3_buckets/site_bucket/` to your aws S3 `SiteBucket`
+  - Keep this window handy — you will need **five** values from it.
+  - In a text editor, open `s3_buckets/site_bucket/assets/js/settings.js` and fill in all fields:
+    - Replace `mydept-aaa-archive` in `templateUrl` with your actual `workingPapersBucket` name.
+    - Copy `ApiEndpoint` → `apiEndpoint`
+    - Copy `IdentityPoolId` → `identityPoolId`
+    - Copy `UserPoolId` → `userPoolId`
+    - Copy `UserPoolClientId` → `userPoolClientId`
+    - Copy `CognitoDomain` → `cognitoDomain`
+    - Save the file.
+  - Upload the entire contents of your local `s3_buckets/site_bucket/` to your S3 `SiteBucket`.
 
-7. Editing working papers bucket:
+8. Editing working papers bucket:
   - Rename the `aaa` and `ssssss` folders to your `ArchiveCode` and `SeriesCode` respectively
   - Replace "aaa" in both `aaaarch.rdf` and `aaaseri.rdf` with your `ArchiveCode`
   - Fill the rdf files with appropriate working paper information. **Important:** The `URL` in `aaaarch.rdf` should be the `RePEcArchiveURL` as it links your archive to RePEc
@@ -114,7 +136,7 @@ Once you have papertool on your machine, you will see the following main folders
   - Replace `s3_buckets/working_papers_bucket/template/cover.png` with your own template. **Important:** The template should be identical in dimensions (2487 x 3516 px) and layout.
   - Finally copy the contents of `s3_buckets/working_papers_bucket/` to your actual S3 `WorkingPapersBucket`
   
-8. And that's it! You can now start uploading working papers on your site by accessing your PaperTool website. The URL will be made from your siteBucket name, and your region, like this: `http://[siteBucket].s3-website-[region].amazonaws.com/`. For example, if your siteBucket is named `econdept` and you are in the `ap-southeast-2` region, your URL will be `http://econdept.s3-website-ap-southeast-2.amazonaws.com/`
+9. And that's it! You can now start uploading working papers on your site by accessing your PaperTool website. The URL will be made from your siteBucket name, and your region, like this: `http://[siteBucket].s3-website-[region].amazonaws.com/`. For example, if your siteBucket is named `econdept` and you are in the `ap-southeast-2` region, your URL will be `http://econdept.s3-website-ap-southeast-2.amazonaws.com/`
   <img src="https://raw.githubusercontent.com/sodalabsio/papertool/main/assets/images/website.png"/>
 
 Incase you have any questions please refer to our FAQ page.
